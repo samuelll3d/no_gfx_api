@@ -28,7 +28,7 @@ Present_Mode :: enum
     Mailbox,         // V-SYNC, but rendering still goes as fast as possible.
     Immediate,       // no V-SYNC, tearing will occur.
 }
-Feature :: enum { Raytracing = 0, Draw_Indirect_Multi }
+Feature :: enum { Raytracing = 0, Draw_Indirect_Multi, Mesh_Shading }
 Features :: bit_set[Feature; u32]
 Memory :: enum { Default = 0, GPU, Readback }
 Queue :: enum { Main = 0, Compute, Transfer }
@@ -337,6 +337,7 @@ sampler_descriptor: proc(sampler_desc: Sampler_Desc, loc := #caller_location) ->
 // Shaders
 shader_create: proc(code: []u32, type: Shader_Type_Graphics, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader : _shader_create
 shader_create_compute: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader : _shader_create_compute
+shader_create_mesh: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader : _shader_create_mesh
 shader_destroy: proc(shader: Shader, loc := #caller_location) : _shader_destroy
 
 // Semaphores
@@ -380,6 +381,7 @@ cmd_barrier: proc(cmd_buf: Command_Buffer, before: Stage, after: Stage, hazards:
 
 cmd_set_shaders: proc(cmd_buf: Command_Buffer, vert_shader: Shader, frag_shader: Shader, loc := #caller_location) : _cmd_set_shaders
 cmd_set_compute_shader: proc(cmd_buf: Command_Buffer, compute_shader: Shader, loc := #caller_location) : _cmd_set_compute_shader
+cmd_set_mesh_shaders: proc(cmd_buf: Command_Buffer, mesh_shader: Shader, frag_shader: Shader, loc := #caller_location) : _cmd_set_mesh_shaders
 cmd_set_depth_state: proc(cmd_buf: Command_Buffer, state: Depth_State, loc := #caller_location) : _cmd_set_depth_state
 cmd_set_raster_state: proc(cmd_buf: Command_Buffer, state: Raster_State, loc := #caller_location) : _cmd_set_raster_state
 cmd_set_blend_state: proc(cmd_buf: Command_Buffer, state: Blend_State, loc := #caller_location) : _cmd_set_blend_state
@@ -404,6 +406,9 @@ cmd_draw_indexed_indirect_raw: proc(cmd_buf: Command_Buffer, vertex_data, fragme
                                     index_format: Index_Format, indirect_arguments: gpuptr, loc := #caller_location) : _cmd_draw_indexed_indirect_raw
 cmd_draw_indexed_indirect_multi_raw: proc(cmd_buf: Command_Buffer, vertex_data, fragment_data, indices: gpuptr,
                                           index_format: Index_Format, indirect_arguments: gpuptr, stride: u32, draw_count: gpuptr, loc := #caller_location) : _cmd_draw_indexed_indirect_multi_raw
+
+cmd_draw_mesh_tasks: proc(cmd_buf: Command_Buffer, mesh_data, fragment_data: gpuptr, group_count_x: u32,
+                          group_count_y: u32 = 1, group_count_z: u32 = 1, loc := #caller_location) : _cmd_draw_mesh_tasks
 
 cmd_build_blas: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location) : _cmd_build_blas
 cmd_build_tlas: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, instances: gpuptr, loc := #caller_location) : _cmd_build_tlas

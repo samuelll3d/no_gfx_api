@@ -366,11 +366,13 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
     }
 
     draw_indirect_multi_extension := cstring(vk.KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME)
+    mesh_shading_extensions := cstring(vk.EXT_MESH_SHADER_EXTENSION_NAME)
 
     // Query physical device feature availability
     {
         supports_raytracing := true
         supports_draw_indirect_multi := false
+        supports_mesh_shading := false
 
         count: u32
         vk.EnumerateDeviceExtensionProperties(ctx.phys_device, nil, &count, nil)
@@ -403,8 +405,21 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
             }
         }
 
+        for &supported_ext in extensions
+        {
+            if cstring(&supported_ext.extensionName[0]) == mesh_shading_extensions
+            {
+                supports_mesh_shading = true
+                break
+            }
+        }
+
+        mesh_shader_features := vk.PhysicalDeviceMeshShaderFeaturesEXT {
+            sType = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+        }
         ray_query_features := vk.PhysicalDeviceRayQueryFeaturesKHR {
-            sType = .PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR
+            sType = .PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+            pNext = supports_mesh_shading ? &mesh_shader_features : nil,
         }
         accel_features := vk.PhysicalDeviceAccelerationStructureFeaturesKHR {
             sType = .PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
@@ -417,9 +432,11 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
         vk.GetPhysicalDeviceFeatures2(ctx.phys_device, &features)
 
         supports_raytracing = supports_raytracing && accel_features.accelerationStructure && ray_query_features.rayQuery
+        supports_mesh_shading = supports_mesh_shading && mesh_shader_features.meshShader && mesh_shader_features.taskShader
 
         if supports_raytracing do ctx.features += { .Raytracing }
         if supports_draw_indirect_multi do ctx.features += { .Draw_Indirect_Multi }
+        if supports_mesh_shading do ctx.features += { .Mesh_Shading }
     }
 
     // Get physical device properties
@@ -512,6 +529,11 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
             append(&required_extensions, vk.KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME)
         }
 
+        if .Mesh_Shading in ctx.features
+        {
+            append(&required_extensions, vk.EXT_MESH_SHADER_EXTENSION_NAME)
+        }
+
         for opt in optional_extensions {
             if supports_device_extension(opt) {
                 append(&required_extensions, opt)
@@ -583,6 +605,13 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
             rayQuery = true,
         }
         if .Raytracing in ctx.features do next = rayquery_features
+        mesh_shader_features := &vk.PhysicalDeviceMeshShaderFeaturesEXT {
+            sType = .PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
+            pNext = next,
+            meshShader = true,
+            // taskShader = true,
+        }
+        if .Mesh_Shading in ctx.features do next = mesh_shader_features
 
         device_ci := vk.DeviceCreateInfo {
             sType = .DEVICE_CREATE_INFO,
@@ -620,7 +649,7 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
                     binding = 0,
                     descriptorType = .SAMPLED_IMAGE,
                     descriptorCount = Max_Textures,
-                    stageFlags = { .VERTEX, .FRAGMENT, .COMPUTE },
+                    stageFlags = { .VERTEX, .FRAGMENT, .COMPUTE, .MESH_EXT },
                 },
             }
             layout: vk.DescriptorSetLayout
@@ -637,7 +666,7 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
                     binding = 0,
                     descriptorType = .STORAGE_IMAGE,
                     descriptorCount = Max_Textures,
-                    stageFlags = { .VERTEX, .FRAGMENT, .COMPUTE },
+                    stageFlags = { .VERTEX, .FRAGMENT, .COMPUTE, .MESH_EXT },
                 },
             }
             layout: vk.DescriptorSetLayout
@@ -654,7 +683,7 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
                     binding = 0,
                     descriptorType = .SAMPLER,
                     descriptorCount = Max_Samplers,
-                    stageFlags = { .VERTEX, .FRAGMENT, .COMPUTE },
+                    stageFlags = { .VERTEX, .FRAGMENT, .COMPUTE, .MESH_EXT },
                 },
             }
             layout: vk.DescriptorSetLayout
@@ -672,7 +701,7 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
                     binding = 0,
                     descriptorType = .ACCELERATION_STRUCTURE_KHR,
                     descriptorCount = Max_BVHs,
-                    stageFlags = { .VERTEX, .FRAGMENT, .COMPUTE },
+                    stageFlags = { .VERTEX, .FRAGMENT, .COMPUTE, .MESH_EXT },
                 },
             }
             layout: vk.DescriptorSetLayout
@@ -684,7 +713,7 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
         {
             push_constant_ranges := []vk.PushConstantRange {
                 {
-                    stageFlags = { .VERTEX, .FRAGMENT },
+                    stageFlags = { .VERTEX, .MESH_EXT, .FRAGMENT },
                     size = size_of(Graphics_Shader_Push_Constants),
                 }
             }
@@ -1859,7 +1888,7 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
     scratch, _ := acquire_scratch()
 
     push_constant_ranges: []vk.PushConstantRange
-    if is_compute {
+    if is_compute && vk_stage != { .MESH_EXT } && vk_stage != { .TASK_EXT } {
         push_constant_ranges = []vk.PushConstantRange {
             {
                 stageFlags = { .COMPUTE },
@@ -1869,7 +1898,7 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
     } else {
         push_constant_ranges = []vk.PushConstantRange {
             {
-                stageFlags = { .VERTEX, .FRAGMENT },
+                stageFlags = { .VERTEX, .MESH_EXT, .FRAGMENT },
                 size = size_of(Graphics_Shader_Push_Constants),
             }
         }
@@ -1945,10 +1974,12 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
     }
 
     next_stage: vk.ShaderStageFlags
-    if is_compute {
+    if is_compute && .MESH_EXT not_in vk_stage && .TASK_EXT not_in vk_stage {
         next_stage = {}
-    } else if vk_stage == { .VERTEX } {
+    } else if vk_stage <= { .VERTEX, .MESH_EXT } {
         next_stage = { .FRAGMENT }
+    } else if vk_stage == { .TASK_EXT } {
+        next_stage = { .MESH_EXT }
     } else {
         next_stage = {}
     }
@@ -1994,6 +2025,11 @@ _shader_create_compute :: proc(code: []u32, group_size_x: u32, group_size_y: u32
 {
     // TODO: Add validation for spec constants conflicting with backend allocated spec constants for workgroup size.
     return _shader_create_internal(code, true, { .COMPUTE }, entry_point_name, group_size_x, group_size_y, group_size_z, name = name, spec_constants = spec_constants, loc = loc)
+}
+
+_shader_create_mesh :: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
+{
+    return _shader_create_internal(code, true, { .MESH_EXT }, entry_point_name, group_size_x, group_size_y, group_size_z, name, spec_constants, loc)
 }
 
 _shader_destroy :: proc(shader: Shader, loc := #caller_location)
@@ -2633,6 +2669,31 @@ _cmd_set_shaders :: proc(cmd_buf: Command_Buffer, vert_shader: Shader, frag_shad
     vk.CmdBindShadersEXT(vk_cmd_buf, u32(len(shader_stages)), raw_data(shader_stages), raw_data(to_bind))
 }
 
+_cmd_set_mesh_shaders :: proc(cmd_buf: Command_Buffer, mesh_shader, frag_shader: Shader, loc := #caller_location)
+{
+    if ctx.validation
+    {
+        ok := true
+        ok &= pool_check(&ctx.command_buffers, cmd_buf, "cmd_buf", loc)
+        ok &= pool_check(&ctx.shaders, mesh_shader, "vert_shader", loc)
+        ok &= pool_check(&ctx.shaders, frag_shader, "frag_shader", loc)
+        if !ok do return
+    }
+
+    cmd_buf := pool_get(&ctx.command_buffers, cmd_buf)
+    mesh_shader := pool_get(&ctx.shaders, mesh_shader)
+    frag_shader := pool_get(&ctx.shaders, frag_shader)
+
+    vk_cmd_buf := cmd_buf.handle
+    vk_mesh_shader := mesh_shader.handle
+    vk_frag_shader := frag_shader.handle
+
+    shader_stages := []vk.ShaderStageFlags { { .VERTEX }, { .MESH_EXT }, { .FRAGMENT } }
+    to_bind := []vk.ShaderEXT { 0, vk_mesh_shader, vk_frag_shader }
+    assert(len(shader_stages) == len(to_bind))
+    vk.CmdBindShadersEXT(vk_cmd_buf, u32(len(shader_stages)), raw_data(shader_stages), raw_data(to_bind))
+}
+
 _cmd_set_depth_state :: proc(cmd_buf: Command_Buffer, state: Depth_State, loc := #caller_location)
 {
     if ctx.validation
@@ -3098,6 +3159,31 @@ _cmd_draw_indexed_indirect_multi_raw :: proc(cmd_buf: Command_Buffer, vertex_dat
     }
 
     vk.CmdDrawIndexedIndirectCount(vk_cmd_buf, arguments_buf, vk.DeviceSize(arguments_offset), draw_count_buf, vk.DeviceSize(draw_count_offset), max_draw_count, stride)
+}
+
+_cmd_draw_mesh_tasks :: proc(cmd_buf: Command_Buffer, mesh_data, fragment_data: gpuptr, group_count_x: u32,
+                             group_count_y: u32 = 1, group_count_z: u32 = 1, loc := #caller_location)
+{
+    if ctx.validation
+    {
+        ok := true
+        ok &= pool_check(&ctx.command_buffers, cmd_buf, "cmd_buf", loc)
+        ok &= check_ptr_allow_nil(mesh_data, "mesh_data", loc)
+        ok &= check_ptr_allow_nil(fragment_data, "fragment_data", loc)
+        if !ok do return
+    }
+
+    cmd_buf := pool_get(&ctx.command_buffers, cmd_buf)
+    vk_cmd_buf := cmd_buf.handle
+
+    push_constants := Graphics_Shader_Push_Constants {
+        vert_data = mesh_data.ptr,
+        frag_data = fragment_data.ptr,
+        indirect_data = nil,
+    }
+    vk.CmdPushConstants(vk_cmd_buf, ctx.common_pipeline_layout_graphics, { .MESH_EXT, .VERTEX, .FRAGMENT }, 0, size_of(Graphics_Shader_Push_Constants), &push_constants)
+
+    vk.CmdDrawMeshTasksEXT(vk_cmd_buf, group_count_x, group_count_y, group_count_z)
 }
 
 _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location)
