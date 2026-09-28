@@ -29,6 +29,13 @@ Graphics_Shader_Push_Constants :: struct #packed {
 }
 
 @(private="file")
+Mesh_Shader_Push_Constants :: struct #packed {
+    mesh_data: rawptr,
+    frag_data: rawptr,
+    indirect_data: rawptr,
+}
+
+@(private="file")
 Compute_Shader_Push_Constants :: struct #packed {
     compute_data: rawptr,
 }
@@ -52,6 +59,7 @@ Context :: struct
     // Common resources
     desc_layouts: [dynamic]vk.DescriptorSetLayout,
     common_pipeline_layout_graphics: vk.PipelineLayout,
+    common_pipeline_layout_mesh: vk.PipelineLayout,
     common_pipeline_layout_compute: vk.PipelineLayout,
 
     // Resource pools
@@ -440,8 +448,12 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
     }
 
     // Get physical device properties
+    mesh_props := vk.PhysicalDeviceMeshShaderPropertiesEXT {
+        sType = .PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT,
+    }
     accel_props := vk.PhysicalDeviceAccelerationStructurePropertiesKHR {
-        sType = .PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR
+        sType = .PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
+        pNext = &mesh_props if .Mesh_Shading in ctx.features else nil
     }
     props2 := vk.PhysicalDeviceProperties2 {
         sType = .PHYSICAL_DEVICE_PROPERTIES_2,
@@ -744,6 +756,24 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
             }
             vk_check(vk.CreatePipelineLayout(ctx.device, &pipeline_layout_ci, nil, &ctx.common_pipeline_layout_compute))
         }
+
+        // Mesh pipeline layout
+        {
+            push_constant_ranges := []vk.PushConstantRange {
+                {
+                    stageFlags = { .VERTEX, .MESH_EXT, .FRAGMENT },
+                    size = size_of(Mesh_Shader_Push_Constants),
+                }
+            }
+            pipeline_layout_ci := vk.PipelineLayoutCreateInfo {
+                sType = .PIPELINE_LAYOUT_CREATE_INFO,
+                pushConstantRangeCount = u32(len(push_constant_ranges)),
+                pPushConstantRanges = raw_data(push_constant_ranges),
+                setLayoutCount = u32(len(ctx.desc_layouts)),
+                pSetLayouts = raw_data(ctx.desc_layouts),
+            }
+            vk_check(vk.CreatePipelineLayout(ctx.device, &pipeline_layout_ci, nil, &ctx.common_pipeline_layout_mesh))
+        }
     }
 
     // Resource pools
@@ -973,6 +1003,7 @@ _cleanup :: proc(loc := #caller_location)
 
         vk.DestroyPipelineLayout(ctx.device, ctx.common_pipeline_layout_graphics, nil)
         vk.DestroyPipelineLayout(ctx.device, ctx.common_pipeline_layout_compute, nil)
+        vk.DestroyPipelineLayout(ctx.device, ctx.common_pipeline_layout_mesh, nil)
     }
 
     for semaphore in ctx.cmd_bufs_sems {
@@ -1989,6 +2020,7 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
 
     shader_cis := vk.ShaderCreateInfoEXT {
         sType = .SHADER_CREATE_INFO_EXT,
+        flags = { .NO_TASK_SHADER } if vk_stage == { .MESH_EXT } else {},
         codeType = .SPIRV,
         codeSize = len(code) * size_of(code[0]),
         pCode = raw_data(code),
@@ -3176,14 +3208,81 @@ _cmd_draw_mesh_tasks :: proc(cmd_buf: Command_Buffer, mesh_data, fragment_data: 
     cmd_buf := pool_get(&ctx.command_buffers, cmd_buf)
     vk_cmd_buf := cmd_buf.handle
 
-    push_constants := Graphics_Shader_Push_Constants {
-        vert_data = mesh_data.ptr,
+    push_constants := Mesh_Shader_Push_Constants {
+        mesh_data = mesh_data.ptr,
         frag_data = fragment_data.ptr,
         indirect_data = nil,
     }
-    vk.CmdPushConstants(vk_cmd_buf, ctx.common_pipeline_layout_graphics, { .MESH_EXT, .VERTEX, .FRAGMENT }, 0, size_of(Graphics_Shader_Push_Constants), &push_constants)
+    vk.CmdPushConstants(vk_cmd_buf, ctx.common_pipeline_layout_mesh, { .MESH_EXT, .VERTEX, .FRAGMENT }, 0, size_of(Mesh_Shader_Push_Constants), &push_constants)
 
     vk.CmdDrawMeshTasksEXT(vk_cmd_buf, group_count_x, group_count_y, group_count_z)
+}
+
+_cmd_draw_mesh_tasks_indirect :: proc(cmd_buf: Command_Buffer, mesh_data, fragment_data, indirect_arguments: gpuptr, loc := #caller_location)
+{
+    if ctx.validation
+    {
+        ok := true
+        ok &= pool_check(&ctx.command_buffers, cmd_buf, "cmd_buf", loc)
+        ok &= check_ptr_allow_nil(mesh_data, "mesh_data", loc)
+        ok &= check_ptr_allow_nil(fragment_data, "fragment_data", loc)
+        ok &= check_ptr(indirect_arguments, "indirect_arguments", loc)
+        if !ok do return
+    }
+
+    cmd_buf := pool_get(&ctx.command_buffers, cmd_buf)
+    vk_cmd_buf := cmd_buf.handle
+
+    arguments_buf, arguments_offset, a_ok := get_buf_offset_from_gpu_ptr(indirect_arguments)
+    ensure(a_ok)
+
+    push_constants := Mesh_Shader_Push_Constants {
+        mesh_data = mesh_data.ptr,
+        frag_data = fragment_data.ptr,
+        indirect_data = indirect_arguments.ptr
+    }
+    vk.CmdPushConstants(vk_cmd_buf, ctx.common_pipeline_layout_mesh, { .MESH_EXT, .VERTEX, .FRAGMENT }, 0, size_of(Mesh_Shader_Push_Constants), &push_constants)
+
+    vk.CmdDrawMeshTasksIndirectEXT(vk_cmd_buf, arguments_buf, vk.DeviceSize(arguments_offset), 1, 0)
+}
+
+_cmd_draw_mesh_tasks_indirect_multi_raw :: proc(cmd_buf: Command_Buffer, mesh_data, fragment_data, indirect_arguments: gpuptr, stride: u32, draw_count: gpuptr, loc := #caller_location)
+{
+    if ctx.validation
+    {
+        ok := true
+        ok &= pool_check(&ctx.command_buffers, cmd_buf, "cmd_buf", loc)
+        ok &= check_ptr_allow_nil(mesh_data, "mesh_data", loc)
+        ok &= check_ptr_allow_nil(fragment_data, "fragment_data", loc)
+        ok &= check_ptr(indirect_arguments, "indirect_arguments", loc)
+        ok &= check_ptr(draw_count, "draw_count", loc)
+        ok &= supports_indirect_multi_draw(loc)
+        if !ok do return
+    }
+
+    cmd_buf := pool_get(&ctx.command_buffers, cmd_buf)
+
+    vk_cmd_buf := cmd_buf.handle
+
+    arguments_buf, arguments_offset, _ := get_buf_offset_from_gpu_ptr(indirect_arguments)
+    draw_count_buf, draw_count_offset, _ := get_buf_offset_from_gpu_ptr(draw_count)
+
+    push_constants := Mesh_Shader_Push_Constants {
+        mesh_data = mesh_data.ptr,
+        frag_data = fragment_data.ptr,
+        indirect_data = indirect_arguments.ptr
+    }
+    vk.CmdPushConstants(vk_cmd_buf, ctx.common_pipeline_layout_mesh, { .MESH_EXT, .VERTEX, .FRAGMENT }, 0, size_of(Mesh_Shader_Push_Constants), &push_constants)
+
+    max_draw_count := max(u32)
+    buf_size, ok_size := get_buf_size_from_gpu_ptr(indirect_arguments)
+    if ok_size && buf_size > vk.DeviceSize(arguments_offset)
+    {
+        available_size := buf_size - vk.DeviceSize(arguments_offset)
+        max_draw_count = u32(available_size / vk.DeviceSize(stride))
+    }
+
+    vk.CmdDrawMeshTasksIndirectCountEXT(vk_cmd_buf, arguments_buf, vk.DeviceSize(arguments_offset), draw_count_buf, vk.DeviceSize(draw_count_offset), max_draw_count, stride)
 }
 
 _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location)
