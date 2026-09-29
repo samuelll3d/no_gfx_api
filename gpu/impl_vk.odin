@@ -3218,7 +3218,7 @@ _cmd_draw_mesh_tasks :: proc(cmd_buf: Command_Buffer, mesh_data, fragment_data: 
     vk.CmdDrawMeshTasksEXT(vk_cmd_buf, group_count_x, group_count_y, group_count_z)
 }
 
-_cmd_draw_mesh_tasks_indirect :: proc(cmd_buf: Command_Buffer, mesh_data, fragment_data, indirect_arguments: gpuptr, loc := #caller_location)
+_cmd_draw_mesh_tasks_indirect_raw :: proc(cmd_buf: Command_Buffer, mesh_data, fragment_data, indirect_arguments: gpuptr, loc := #caller_location)
 {
     if ctx.validation
     {

@@ -81,10 +81,17 @@ cmd_draw_indexed_indirect_multi :: #force_inline proc(cmd_buf: Command_Buffer, v
     cmd_draw_indexed_indirect_multi_raw(cmd_buf, vertex_data, fragment_data, indices, idx_fmt, indirect_arguments, size_of(T2), draw_count, loc)
 }
 
+cmd_draw_mesh_tasks_indirect :: #force_inline proc(cmd_buf: Command_Buffer, mesh_data, fragment_data: gpuptr, indirect_arguments: ptr_t($T), loc := #caller_location)
+{
+    #assert(type_of(indirect_arguments.cpu.cmd) == Draw_Mesh_Tasks_Indirect_Command)
+    _cmd_draw_mesh_tasks_indirect_raw(cmd_buf, mesh_data, fragment_data, indirect_arguments, loc)
+}
+
 cmd_draw_mesh_tasks_indirect_multi :: #force_inline proc(cmd_buf: Command_Buffer, mesh_data, fragment_data: gpuptr,
                                                          indirect_arguments: slice_t($T), draw_count: ptr_t(u32), loc := #caller_location)
 {
-    _cmd_draw_mesh_tasks_indirect_multi_raw(cmd_buf, mesh_data, fragment_data, indirect_arguments, size_of(T), draw_count)
+    #assert(type_of(indirect_arguments.cpu[0].cmd) == Draw_Mesh_Tasks_Indirect_Command)
+    _cmd_draw_mesh_tasks_indirect_multi_raw(cmd_buf, mesh_data, fragment_data, indirect_arguments, size_of(T), draw_count, loc)
 }
 
 // Memory

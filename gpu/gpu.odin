@@ -230,12 +230,7 @@ Dispatch_Indirect_Command :: struct
     num_groups_z: u32,
 }
 
-Draw_Mesh_Tasks_Indirect_Command :: struct
-{
-    num_groups_x: u32,
-    num_groups_y: u32,
-    num_groups_z: u32,
-}
+Draw_Mesh_Tasks_Indirect_Command :: distinct Dispatch_Indirect_Command
 
 BVH_Instance :: struct
 {
